@@ -101,7 +101,7 @@ def transfer_to_roof_floor_sheet(wb, roof_floor_data):
     configs = [
         {'key': 'UB部分', 'shiyo': 'L-1', 'bui': 'その他床', 'u_val': 1.23, 'temp_coef': 0.7},
         {'key': 'その他床', 'shiyo': 'F-1', 'bui': 'その他床', 'u_val': 0.413, 'temp_coef': 0.7},
-        {'key': '天井', 'shiyo': 'R-1', 'bui': '天井', 'u_val': 0.227, 'temp_coef': 1.0},
+        {'key': '天井', 'shiyo': 'R-1', 'bui': '天井', 'u_val': 0.288, 'temp_coef': 1.0},
         {'key': '屋根', 'shiyo': 'R-2', 'bui': '屋根', 'u_val': 0.207, 'temp_coef': 1.0},
         {'key': '外気床', 'shiyo': 'F-2', 'bui': '外気床', 'u_val': 0.337, 'temp_coef': 1.0}
     ]
