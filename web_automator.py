@@ -24,7 +24,6 @@ class HouseAppAutomationMethods:
         text = text.strip()
         
         # 1. 「＝」や「=」「→」が含まれている場合、その後ろ（右側）だけを切り取る
-        # （例: "主1 ＝ 25.92" が1つのテキストになっていた場合 -> " 25.92" になる）
         if '＝' in text or '=' in text:
             target_part = re.split(r'[＝=]', text)[-1].strip()
         elif '→' in text:
@@ -36,10 +35,7 @@ class HouseAppAutomationMethods:
         clean_text = target_part.replace(' ', '').replace(' ', '').replace(',', '')
         clean_text = clean_text.replace('㎡', '').replace('m2', '').replace('m²', '').replace('坪', '')
         
-        # 3. ★ここがポイント★
-        # 単位を消した後も「数字とピリオド」以外の文字（漢字やアルファベットなど）が残っているかチェック。
-        # 残っている場合（例: target_part が "主1" の場合、clean_text も "主1" となる）、
-        # それは面積ではなく識別子とみなして None を返し、スキップさせる。
+        # 3. 単位を消した後も「数字とピリオド」以外の文字（漢字やアルファベットなど）が残っているかチェック
         if re.search(r'[^\d\.]', clean_text):
             return None
             
@@ -72,29 +68,24 @@ class HouseAppAutomationMethods:
             "total_area": "0.00"
         }
         
-        # ★改修: 右方向へ探す最大距離（6000mm）、Y方向（高さ）のズレ許容範囲（1000mm）に拡大
         NUM_X_TOLERANCE = 6000
         NUM_Y_TOLERANCE = 1000
 
         for search_word, key in target_tables.items():
-            # 検索対象のラベルをすべて取得
             target_entities = [e for e in texts if search_word in e['text']]
             
             best_val = None
             min_dist = float('inf')
             
-            # 複数の同じラベルがある場合も考慮し、最も数値が近くにあるものを正解とする
             for target_entity in target_entities:
                 for e in texts:
                     dx = e['x'] - target_entity['x']
                     dy = e['y'] - target_entity['y']
                     
-                    # 確実に右側にあり、Y方向のズレが許容範囲内のものを対象とする
                     if 0 < dx < NUM_X_TOLERANCE and abs(dy) < NUM_Y_TOLERANCE:
                         val = cls.parse_target_value(e['text'])
                         if val is not None:
-                            dist = math.hypot(dx, dy) # 直線距離を計算
-                            # 一番距離が近い（すぐ右隣にある）数値を採用
+                            dist = math.hypot(dx, dy) 
                             if dist < min_dist:
                                 min_dist = dist
                                 best_val = val
@@ -108,7 +99,6 @@ class HouseAppAutomationMethods:
     def parse_excel_common_conditions(excel_path: str, house_address: str) -> dict:
         """
         Excelファイルの「共通条件・結果」シートから、指定されたセル番地（J11, J12, X11, X12）の値を抽出する。
-        （プログラムで生成直後のExcelファイルは数式の計算結果が失われているため、Win32COMでExcelを起動して確実に取得する）
         """
         results = {}
         abs_excel_path = os.path.abspath(excel_path)
@@ -118,7 +108,7 @@ class HouseAppAutomationMethods:
                 if val is None:
                     return None
                 if isinstance(val, (int, float)):
-                    if val < 0: # 面積やUA値がマイナスになることはないため、COMのエラー値（-2146826281等）を弾く
+                    if val < 0:
                         return None
                     return float(val)
                 match = re.search(r'\d+(?:\.\d+)?', str(val))
@@ -128,24 +118,21 @@ class HouseAppAutomationMethods:
                 pass
             return None
 
-        # ★改修：1. COM経由でExcelを裏側で操作し、計算済みの値を確実に取得する
         try:
             import win32com.client
             import pythoncom
-            pythoncom.CoInitialize() # スレッドエラー防止
+            pythoncom.CoInitialize()
             
             excel = win32com.client.Dispatch("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
             try:
-                # リンク更新なし、読み取り専用で開いて数式を強制計算させる
                 wb = excel.Workbooks.Open(abs_excel_path, False, True)
                 try:
                     ws = wb.Worksheets("共通条件・結果")
                 except Exception:
                     ws = wb.Worksheets(1)
                 
-                # 指定セルからピンポイントで抽出
                 val_area = safe_float(ws.Range("J11").Value)
                 if val_area is not None: results["envelope_area_total"] = val_area
                     
@@ -163,8 +150,6 @@ class HouseAppAutomationMethods:
                 excel.Quit()
         except Exception as e:
             print(f"⚠️ Excelの起動(COM操作)に失敗したため、openpyxlで代替抽出します: {e}")
-            
-            # 2. COMが使えない場合のフォールバック（保険）
             try:
                 wb_ox = openpyxl.load_workbook(abs_excel_path, data_only=True)
                 ws_ox = wb_ox["共通条件・結果"] if "共通条件・結果" in wb_ox.sheetnames else wb_ox.worksheets[0]
@@ -184,7 +169,6 @@ class HouseAppAutomationMethods:
             except Exception as ox_e:
                 print(f"⚠️ openpyxlでの抽出にも失敗しました: {ox_e}")
 
-        # 地域区分の自動判定
         if "東広島市" in house_address:
             results["region"] = "５地域"
         else:
@@ -195,9 +179,6 @@ class HouseAppAutomationMethods:
     @classmethod
     def run_automation_flow(cls, housing_name: str, floor_areas: dict, common_data: dict, hot_water_type: str, download_dir: str):
         
-        # =================================================================
-        # 【変更点】新規起動ではなく、デバッグモードのChrome（ポート9222）に接続
-        # =================================================================
         options = webdriver.ChromeOptions()
         options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
         
@@ -214,9 +195,6 @@ class HouseAppAutomationMethods:
                 let el = arguments[0];
                 let val = arguments[1];
                 
-                // ★ここが超重要★
-                // もし取得した要素(appbox)が <input> ではなく枠組み(div)だった場合、
-                // その中から実際の <input> を探し出してターゲットを切り替える！
                 if (el.tagName.toLowerCase() !== 'input') {
                     let innerInput = el.querySelector('input');
                     if (innerInput) {
@@ -240,20 +218,16 @@ class HouseAppAutomationMethods:
             """, element, value)
 
         try:
-            # =================================================================
-            # 0. 最初に必ず「基本情報」タブに戻る（前回のテストの続きから始まるのを防ぐ）
-            # =================================================================
+            # 0. 基本情報タブへ移動
             print("🏠 基本情報タブへ移動（初期化）します...")
             driver.execute_script("""
                 let tabs = Array.from(document.querySelectorAll('a, button, .v-tab'));
                 let basicTab = tabs.find(t => t.textContent.includes('基本情報'));
                 if(basicTab) basicTab.click();
             """)
-            time.sleep(2) # 画面が切り替わるのを待つ
+            time.sleep(2)
 
-            # =================================================================
             # 1. 基本情報の入力
-            # =================================================================
             print("📝 基本情報を入力中...")
             basic_fields = {
                 "appbox-住宅タイプの名称": housing_name,
@@ -274,7 +248,7 @@ class HouseAppAutomationMethods:
                     print(f"⚠️ {testid} の入力欄が見つからないか、スキップしました。")
 
             # =================================================================
-            # 2. 外皮項目の編集 (★ appbox- に戻しました)
+            # 2. 外皮項目の編集
             # =================================================================
             print("➡️ 外皮タブへ遷移します...")
             driver.execute_script("""
@@ -284,11 +258,40 @@ class HouseAppAutomationMethods:
             """)
             time.sleep(2)
             
+            # --- ★追加：暖房期日射熱取得率の小数点第2位以下切り捨て処理 ---
+            from decimal import Decimal, ROUND_DOWN
+            heating_val = common_data.get("heating_solar_heat_gain", "")
+            cooling_val = common_data.get("cooling_solar_heat_gain", "")
+            avgheat_val = common_data.get("avg_heat_transfer", "")
+            if heating_val != "":
+                try:
+                    # '0.1' で小数点第1位まで残し、第2位以降を切り捨てる（ROUND_DOWN）
+                    # （例: 1.39 → 1.3）
+                    # ※もし「第2位まで残す（例: 1.395 → 1.39）」という意味であれば、 Decimal('0.01') に書き換えてください。
+                    heating_val = float(Decimal(str(heating_val)).quantize(Decimal('0.1'), rounding=ROUND_DOWN))
+                except Exception:
+                    pass
+
+            if cooling_val != "":
+                try:
+                    cooling_val = float(Decimal(str(cooling_val)).quantize(Decimal('0.1'), rounding=ROUND_DOWN))
+                except Exception:
+                    pass
+
+            if avgheat_val != "":
+                try:
+                    avgheat_val = float(Decimal(str(avgheat_val)).quantize(Decimal('0.01'), rounding=ROUND_DOWN))   
+                except Exception:
+                    pass
+                
+
+            # -----------------------------------------------------------
+            
             env_fields = {
                 "appbox-外皮面積の合計": common_data.get("envelope_area_total", ""),
-                "appbox-冷房期の平均日射熱取得率（η<sub>AC</sub>）": common_data.get("cooling_solar_heat_gain", ""),
-                "appbox-外皮平均熱貫流率（U<sub>A</sub>）": common_data.get("avg_heat_transfer", ""),
-                "appbox-暖房期の平均日射熱取得率（η<sub>AH</sub>）": common_data.get("heating_solar_heat_gain", "")
+                "appbox-冷房期の平均日射熱取得率（η<sub>AC</sub>）": cooling_val,
+                "appbox-外皮平均熱貫流率（U<sub>A</sub>）": avgheat_val,
+                "appbox-暖房期の平均日射熱取得率（η<sub>AH</sub>）": heating_val
             }
             
             for testid, fval in env_fields.items():
@@ -300,8 +303,94 @@ class HouseAppAutomationMethods:
                     except Exception:
                         print(f"⚠️ {testid} の入力欄が見つからないか、スキップしました。")
 
+
             # =================================================================
-            # 3. 給湯項目の編集
+            # 3. 暖房・冷房タブの編集
+            # =================================================================
+            print("➡️ 暖房タブへ遷移します...")
+            driver.execute_script("""
+                let tabs = Array.from(document.querySelectorAll('a, button, .v-tab'));
+                let heatTab = tabs.find(t => t.textContent.includes('暖房'));
+                if(heatTab) heatTab.click();
+            """)
+            time.sleep(1.5)
+            # 「設置しない」を選択
+            driver.execute_script("""
+                let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                let target = labels.find(l => l.textContent.includes('設置しない'));
+                if(target) target.click();
+            """)
+            print("✔️ 暖房設備を「設置しない」に設定しました。")
+
+            print("➡️ 冷房タブへ遷移します...")
+            driver.execute_script("""
+                let tabs = Array.from(document.querySelectorAll('a, button, .v-tab'));
+                let coolTab = tabs.find(t => t.textContent.includes('冷房'));
+                if(coolTab) coolTab.click();
+            """)
+            time.sleep(1.5)
+            # 「設置しない」を選択
+            driver.execute_script("""
+                let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                let target = labels.find(l => l.textContent.includes('設置しない'));
+                if(target) target.click();
+            """)
+            print("✔️ 冷房設備を「設置しない」に設定しました。")
+
+
+            # =================================================================
+            # 4. 換気タブの編集
+            # =================================================================
+            print("➡️ 換気タブへ遷移します...")
+            driver.execute_script("""
+                let tabs = Array.from(document.querySelectorAll('a, button, .v-tab'));
+                let ventTab = tabs.find(t => t.textContent.includes('換気'));
+                if(ventTab) ventTab.click();
+            """)
+            time.sleep(1.5)
+
+            # 換気1：ダクト式第二種 または ダクト式第三種 を選択
+            driver.execute_script("""
+                let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                let v1 = labels.find(l => l.textContent.includes('壁付け式第二種換気設備') || l.textContent.includes('壁付け式第三種換気設備'));
+                if(v1) v1.click();
+            """)
+            time.sleep(1)
+
+            # 換気2：比消費電力「入力する」を選択
+            driver.execute_script("""
+                let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                let v2 = labels.find(l => (l.textContent.trim() === '入力する' && !l.textContent.includes('効率')) || l.textContent.includes('比消費電力を入力'));
+                if(v2) v2.click();
+            """)
+            time.sleep(1.5)
+
+            # 比消費電力 0.07 を入力 (表示された最初のテキストボックス)
+            driver.execute_script("""
+                let inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+                let visibleInputs = inputs.filter(i => i.offsetParent !== null && !i.readOnly && !i.disabled);
+                if (visibleInputs.length > 0) {
+                    let targetInput = visibleInputs[0];
+                    targetInput.removeAttribute('readonly');
+                    targetInput.value = '0.07';
+                    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            """)
+            print("✔️ 比消費電力を「0.07」に設定しました。")
+            
+            # 換気3：換気回数 0.5回/h を選択
+            driver.execute_script("""
+                let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                let v3 = labels.find(l => l.textContent.includes('0.5回/h') || l.textContent.includes('0.5回/ｈ'));
+                if(v3) v3.click();
+            """)
+            print("✔️ 換気回数を「0.5回/h」に設定しました。")
+            time.sleep(1)
+
+
+            # =================================================================
+            # 5. 給湯タブの編集
             # =================================================================
             print("➡️ 給湯タブへ遷移します...")
             driver.execute_script("""
@@ -314,12 +403,41 @@ class HouseAppAutomationMethods:
             try:
                 if hot_water_type == "ガス":
                     driver.execute_script("""
-                        let labels = Array.from(document.querySelectorAll('label, .v-label'));
-                        let target = labels.find(l => l.textContent.includes('ガス潜熱回収型') || l.textContent.includes('ガス'));
-                        if(target) target.click();
+                        let elements = Array.from(document.querySelectorAll('label, .v-label, .v-radio'));
+                        // 「ガス」だけだと従来型を誤爆するので、固有の文字列を指定する
+                        let target = elements.find(el => el.textContent.includes('ガス潜熱回収型'));
+                        if(target) {
+                            let input = target.querySelector('input[type="radio"]');
+                            if(input) input.click();
+                            else target.click(); // 🌟エコキュートと同じく、ラベルのクリックを発動させる
+                        }
                     """)
+                    time.sleep(1)
+                    
+                    # 効率（エネルギー消費効率）を入力を選択
+                    driver.execute_script("""
+                        let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                        let eff_input = labels.find(l => l.textContent.includes('効率（エネルギー消費効率）を入力') || l.textContent.includes('効率を入力'));
+                        if(!eff_input) eff_input = labels.find(l => l.textContent.trim() === '入力する');
+                        if(eff_input) eff_input.click();
+                    """)
+                    time.sleep(1.5)
+                    
+                    # エネルギー消費効率 91.5 を入力
+                    driver.execute_script("""
+                        let inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"]'));
+                        let visibleInputs = inputs.filter(i => i.offsetParent !== null && !i.readOnly && !i.disabled);
+                        if (visibleInputs.length > 0) {
+                            let targetInput = visibleInputs[0];
+                            targetInput.removeAttribute('readonly');
+                            targetInput.value = '91.5';
+                            targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    """)
+                    print("✔️ ガスのエネルギー消費効率を「91.5」に設定しました。")
+                    
                 elif hot_water_type in ["長方形エコキュート", "正方形エコキュート"]:
-                    # 1. まず大元の「電気ヒートポンプ給湯機」を選択する
                     driver.execute_script("""
                         let elements = Array.from(document.querySelectorAll('label, .v-label, .v-radio'));
                         let target = elements.find(el => el.textContent.includes('電気ヒートポンプ給湯機') || el.textContent.includes('エコキュート'));
@@ -329,11 +447,8 @@ class HouseAppAutomationMethods:
                             else target.click();
                         }
                     """)
-                    
-                    # 項目が展開されるのを少し待つ
                     time.sleep(1) 
                     
-                    # 2. ★追加★ 画像にあった「JIS効率を入力する」のラジオボタンをクリックする
                     driver.execute_script("""
                         let subElements = Array.from(document.querySelectorAll('label, .v-label, .v-radio'));
                         let subTarget = subElements.find(el => el.textContent.includes('JIS効率を入力する'));
@@ -343,38 +458,57 @@ class HouseAppAutomationMethods:
                             else subTarget.click();
                         }
                     """)
-                    
-                    # 3. JIS効率の入力欄がアニメーションで出現するのを待つ
                     time.sleep(1.5) 
                     
-                    # 4. JIS効率の入力
                     jis_val = "3.0" if hot_water_type == "長方形エコキュート" else "3.6"
-                    
                     jis_testid = "appbox-JIS効率" 
-                    elem = driver.find_element(By.CSS_SELECTOR, f'[data-testid="{jis_testid}"]')
-                    set_input_value_by_js(elem, jis_val)
-                    print(f"✔️ {jis_testid} に {jis_val} を入力しました。")
+                    try:
+                        elem = driver.find_element(By.CSS_SELECTOR, f'[data-testid="{jis_testid}"]')
+                        set_input_value_by_js(elem, jis_val)
+                        print(f"✔️ エコキュートのJIS効率に「{jis_val}」を設定しました。")
+                    except Exception:
+                        pass
+                
+                time.sleep(1)
+
+                # NEW: 給湯5 (配管方式と配管径) と 給湯7 (浴槽の保温措置)
+                driver.execute_script("""
+                    let labels = Array.from(document.querySelectorAll('label, .v-label'));
                     
+                    // 配管方式: ヘッダー方式
+                    let header = labels.find(l => l.textContent.includes('ヘッダー方式'));
+                    if(header) header.click();
+                """)
+                time.sleep(0.5)
+                
+                driver.execute_script("""
+                    let labels = Array.from(document.querySelectorAll('label, .v-label'));
+                    
+                    // 配管径: すべての配管径が13A以下
+                    let pipe = labels.find(l => l.textContent.includes('すべての配管径が13A以下') || l.textContent.includes('13A以下'));
+                    if(pipe) pipe.click();
+                    
+                    // 浴槽の保温措置: 高断熱浴槽を使用する
+                    let bath = labels.find(l => l.textContent.includes('高断熱浴槽を使用する'));
+                    if(bath) bath.click();
+                """)
+                print("✔️ ヘッダー方式（13A以下）と高断熱浴槽の設定を行いました。")
+                
             except Exception as e:
                 print(f"⚠️ 給湯設定の操作に失敗しました: {e}")
 
-                # =================================================================
-            # 4. 保存処理
+
+            # =================================================================
+            # 6. 保存処理
             # =================================================================
             print("💾 保存処理を実行します...")
-            
             try:
-                # 1. 画面上部にある1回目の保存ボタンをクリック
-                # (.title_command の中にある class="save" のボタンを指定)
                 first_save_btn = driver.find_element(By.CSS_SELECTOR, '.title_command input.save')
                 driver.execute_script("arguments[0].click();", first_save_btn)
                 print("✔️ 1回目の「保存」をクリックしました！")
                 
-                # モーダル（ポップアップ）がアニメーションで表示されるのを少し待つ
                 time.sleep(1.5) 
                 
-                # 2. ポップアップ画面の2回目の保存ボタンをクリック
-                # (.modal-footer の中にある value="保存" のボタンを指定)
                 modal_save_btn = driver.find_element(By.CSS_SELECTOR, '.modal-footer input[value="保存"]')
                 driver.execute_script("arguments[0].click();", modal_save_btn)
                 print("✔️ 完了ポップアップの「保存」をクリックしました！データの保存完了です。")
@@ -382,16 +516,14 @@ class HouseAppAutomationMethods:
             except Exception as e:
                 print(f"⚠️ 保存ボタンが見つからないか、クリックに失敗しました: {e}")
 
-            # =================================================================
-            # 5. 計算とPDF出力
+            time.sleep(3) 
+
+           # =================================================================
+            # 7. 計算と結果抽出、そしてPDF出力
             # =================================================================
             print("🧮 計算処理を実行します...")
-            
             try:
-                # 保存の直後なので、念のため画面が落ち着くのを少し待つ
                 time.sleep(2)
-
-                # 1. 「計算」ボタンをクリック（変わりやすい親クラスを無視して、直接「計算」ボタンを探す）
                 driver.execute_script("""
                     let buttons = Array.from(document.querySelectorAll('input[type="button"], button'));
                     let calcBtn = buttons.find(b => b.value === '計算' || b.classList.contains('keisan'));
@@ -399,42 +531,56 @@ class HouseAppAutomationMethods:
                 """)
                 print("✔️ 「計算」をクリックしました。処理完了を待機します...")
                 
-                # 計算には少し時間がかかることがあるため長めに待機
+                # 計算完了までしっかり待つ
                 time.sleep(5) 
                 
-                # 2. 「PDFを出力する」ボタンをクリック（こちらも柔軟な探し方に変更）
-                driver.execute_script("""
-                    let buttons = Array.from(document.querySelectorAll('input[type="button"], button'));
-                    let pdfBtn = buttons.find(b => b.value && b.value.includes('PDF') || b.classList.contains('uq_btnPdf'));
-                    if(pdfBtn) pdfBtn.click();
-                """)
-                print("✔️ 「PDFを出力する」をクリックしました！")
-                
-                # 新しいタブが開く、または印刷ダイアログが出るのを待つ
-                time.sleep(3) 
+                # ★修正：PDF出力ボタンを押す「前」に、安全にBEIなどを抽出しておく
+                print("📊 計算結果画面からBEI・エネルギー消費量を抽出しています...")
+                calc_results = None
+                try:
+                    calc_results = driver.execute_script("""
+                        let results = { design_energy: "", standard_energy: "", bei: "" };
+                        
+                        // 設計一次エネルギー消費量（最後の行の合計値を取得）
+                        let designEls = document.querySelectorAll('td.result_calclated');
+                        if(designEls.length > 0) {
+                            let el = designEls[designEls.length - 1].cloneNode(true);
+                            let span = el.querySelector('span');
+                            if(span) el.removeChild(span); // "GJ"の文字を消す
+                            results.design_energy = el.textContent.trim();
+                        }
+                        
+                        // 基準一次エネルギー消費量（最後の行の合計値を取得）
+                        let standardEls = document.querySelectorAll('td.standard');
+                        if(standardEls.length > 0) {
+                            let el = standardEls[standardEls.length - 1].cloneNode(true);
+                            let span = el.querySelector('span');
+                            if(span) el.removeChild(span); // "GJ"の文字を消す
+                            results.standard_energy = el.textContent.trim();
+                        }
+                        
+                        // BEI
+                        let beiEl = document.querySelector('td.bei_value');
+                        if(beiEl) results.bei = beiEl.textContent.trim();
+                        
+                        return results;
+                    """)
+                    print(f"✔️ 抽出結果: {calc_results}")
+                except Exception as e:
+                    print(f"⚠️ 計算結果の抽出に失敗しました: {e}")
 
-                # =============================================================
-                # 3. 印刷ダイアログ（ChromeのUI）の突破
-                # =============================================================
-                if len(driver.window_handles) > 1:
-                    driver.switch_to.window(driver.window_handles[-1])
-                    print("📄 PDFのタブに切り替えました。")
-                    time.sleep(1)
-                
-                from selenium.webdriver.common.action_chains import ActionChains
-                from selenium.webdriver.common.keys import Keys
-                
-                # エンターキーを送信して青い「保存」ボタンを押す
-                ActionChains(driver).send_keys(Keys.ENTER).perform()
-                print("✔️ 印刷ダイアログで「保存（Enter）」を実行しました！")
+            ## PDF出力処理    
 
             except Exception as e:
                 print(f"⚠️ 計算またはPDF出力処理に失敗しました: {e}")
+
+            #input("\n✅ PDFの保存が完了したら、この黒い画面（ターミナル）をクリックして Enterキー を押してください（ブラウザが閉じます）...")
+            
+            # 抽出した結果をメイン処理（Excel転記）に返す
+            return calc_results
 
         except Exception as e:
             print(f"\n⚠️ 自動化処理中にエラーが発生しました: {e}")
             raise e
         finally:
             print("Pythonの処理を終了します。（Chromeは開いたまま維持します）")
-            # 【変更点】デバッグモードのChromeが勝手に閉じないようにコメントアウト
-            # driver.quit()

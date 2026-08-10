@@ -16,6 +16,8 @@ def parse_window_string(val_str):
         numbers = match.group(2)
         if 'HS' in prefix:
             u_value = 2.11
+        elif 'G' in prefix:
+            u_value = 2.91
             
         w_str = numbers[:3]
         h_str = numbers[3:]
@@ -135,18 +137,19 @@ def transfer_to_wall_area(wb, wall_area_data):
             ws.range('L35').value = area_val
             print(f"✔️ {sheet_name} の外壁面積に {area_val} ㎡ を転記しました。")
 
-def transfer_to_envelope_calc_sheet(extracted_data, foundation_data, roof_floor_data, wall_area_data, house_name, house_address):
+# ★引数に output_dir を追加
+def transfer_to_envelope_calc_sheet(extracted_data, foundation_data, roof_floor_data, wall_area_data, house_name, house_address, output_dir="."):
     target_files = [f for f in glob.glob('*外皮計算書*.xlsx') if not os.path.basename(f).startswith('~$')]
     
     if not target_files:
         print("⚠️ エラー: 同フォルダ内に「外皮計算書」を含むExcelファイルが見つかりません。")
-        return
+        return None
         
     template_path = os.path.abspath(target_files[0])
+    safe_house_name = "".join(c for c in house_name if c not in r'\/:*?"<>|') 
     
-    # 🌟 NEW: 出力ファイル名を「外皮計算書（住宅の名称）.xlsx」に変更
-    safe_house_name = "".join(c for c in house_name if c not in r'\/:*?"<>|') # ファイル名に使えない文字を除外
-    output_filename = os.path.abspath(f"外皮計算書ver2.4（{safe_house_name}）.xlsx")
+    # ★変更: 保存先を output_dir の中に変更
+    output_filename = os.path.abspath(os.path.join(output_dir, f"外皮計算書ver2.4（{safe_house_name}）.xlsx"))
     
     print(f"\n📄 転記先ファイル: {os.path.basename(template_path)} に書き込みを開始します...")
     
@@ -155,7 +158,6 @@ def transfer_to_envelope_calc_sheet(extracted_data, foundation_data, roof_floor_
     try:
         wb = app.books.open(template_path)
         
-        # 共通条件・結果シートへの基本情報・地域区分の転記
         sheet_common = '共通条件・結果'
         if sheet_common in [s.name for s in wb.sheets]:
             ws_common = wb.sheets[sheet_common]
@@ -244,10 +246,13 @@ def transfer_to_envelope_calc_sheet(extracted_data, foundation_data, roof_floor_
             os.remove(output_filename)
 
         wb.save(output_filename)
-        print(f"\n✅ すべての転記が完了しました！ファイル【{os.path.basename(output_filename)}】を保存しました。")
+        print(f"\n✅ 外皮計算書の転記が完了しました！ファイル【{os.path.basename(output_filename)}】を物件フォルダに保存しました。")
+        
+        return output_filename
 
     except Exception as e:
         print(f"\n⚠️ エラーが発生しました: {e}")
+        return None
     finally:
         wb.close()
         app.quit()
