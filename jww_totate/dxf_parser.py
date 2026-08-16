@@ -64,7 +64,7 @@ def calculate_proximate_texts(text_entities, max_distance, fallback_value):
                 if i == j:
                     continue
                     
-                # ★追加：RHを含む文字列はサッシ抽出候補から完全に除外する
+                # RHを含む文字列はサッシ抽出候補から完全に除外する
                 if 'RH' in candidate['text'].upper():
                     continue
                     
@@ -86,9 +86,12 @@ def calculate_proximate_texts(text_entities, max_distance, fallback_value):
 def extract_foundation_data(text_entities, max_distance=1000):
     foundation_data = {
         '玄関土間面積': None,
-        '日射当たる周長': None,
-        '日射当たらない周長': None,
-        '基礎壁面積': {}
+        '日射当たる周長（玄関土間）': None,
+        '日射当たらない周長（玄関土間）': None,
+        '基礎壁面積': {},
+        '基礎断熱部分面積': None,
+        '日射当たる周長（浴室土間）': None,
+        '日射当たらない周長（浴室土間）': None
     }
     
     directions_priority = ["北東", "南東", "南西", "北西", "北", "東", "南", "西"]
@@ -96,14 +99,26 @@ def extract_foundation_data(text_entities, max_distance=1000):
     for ent in text_entities:
         text = ent['text'].replace(' ', '').replace(' ', '')
         
-        m_hit = re.search(r'日射の当たる基礎壁周長[:：]?([0-9.]+)', text)
-        if m_hit:
-            foundation_data['日射当たる周長'] = float(m_hit.group(1))
+        # 玄関土間用（「他」という文字が含まれていないものを拾う）
+        m_hit = re.search(r'日射の当たる(?:土間)?基礎壁周長[:：]?([0-9.]+)', text)
+        if m_hit and '他' not in text:
+            foundation_data['日射当たる周長（玄関土間）'] = float(m_hit.group(1))
             continue
             
-        m_nohit = re.search(r'日射の当たらない基礎壁周長[:：]?([0-9.]+)', text)
-        if m_nohit:
-            foundation_data['日射当たらない周長'] = float(m_nohit.group(1))
+        m_nohit = re.search(r'日射の当たらない(?:土間)?基礎壁周長[:：]?([0-9.]+)', text)
+        if m_nohit and '他' not in text:
+            foundation_data['日射当たらない周長（玄関土間）'] = float(m_nohit.group(1))
+            continue
+            
+        # 浴室土間用（「他」という文字が含まれているものを拾う）
+        m_other_hit = re.search(r'日射の当たる他土間基礎壁周長[:：]?([0-9.]+)', text)
+        if m_other_hit:
+            foundation_data['日射当たる周長（浴室土間）'] = float(m_other_hit.group(1))
+            continue
+            
+        m_other_nohit = re.search(r'日射の当たらない他土間基礎壁周長[:：]?([0-9.]+)', text)
+        if m_other_nohit:
+            foundation_data['日射当たらない周長（浴室土間）'] = float(m_other_nohit.group(1))
             continue
             
         for d in directions_priority:
@@ -113,33 +128,41 @@ def extract_foundation_data(text_entities, max_distance=1000):
                     foundation_data['基礎壁面積'][d] = float(m_wall.group(1))
                 break
 
-    g_text = next((e for e in text_entities if '玄関土間面積表' in e['text']), None)
-    if g_text:
-        TABLE_WIDTH_TOLERANCE = 3000  
-        TABLE_HEIGHT_TOLERANCE = 8000 
-        candidates = []
-        for e in text_entities:
-            if '合計' in e['text']:
-                dx = abs(e['x'] - g_text['x'])
-                dy = g_text['y'] - e['y'] 
-                if 0 < dy < TABLE_HEIGHT_TOLERANCE and dx < TABLE_WIDTH_TOLERANCE:
-                    dist = math.hypot(dx, dy)
-                    candidates.append((dist, e))
-        candidates.sort(key=lambda x: x[0])
-        
-        if candidates:
-            target_gokei = candidates[0][1]
-            right_nums = []
+    # 面積表からの抽出を共通関数化
+    def get_area_from_table(title_keywords):
+        t_text = next((e for e in text_entities if any(kw in e['text'] for kw in title_keywords)), None)
+        if t_text:
+            TABLE_WIDTH_TOLERANCE = 3000  
+            TABLE_HEIGHT_TOLERANCE = 8000 
+            candidates = []
             for e in text_entities:
-                if e['x'] > target_gokei['x'] and abs(e['y'] - target_gokei['y']) <= 200:
-                    if abs(e['x'] - target_gokei['x']) < 4000:
-                        val = parse_target_value(e['text'])
-                        if val is not None:
-                            right_nums.append((e['x'] - target_gokei['x'], val))
+                if '合計' in e['text']:
+                    dx = abs(e['x'] - t_text['x'])
+                    dy = t_text['y'] - e['y'] 
+                    if 0 < dy < TABLE_HEIGHT_TOLERANCE and dx < TABLE_WIDTH_TOLERANCE:
+                        dist = math.hypot(dx, dy)
+                        candidates.append((dist, e))
+            candidates.sort(key=lambda x: x[0])
             
-            right_nums.sort(key=lambda x: x[0])
-            if right_nums:
-                foundation_data['玄関土間面積'] = right_nums[0][1]
+            if candidates:
+                target_gokei = candidates[0][1]
+                right_nums = []
+                for e in text_entities:
+                    if e['x'] > target_gokei['x'] and abs(e['y'] - target_gokei['y']) <= 200:
+                        if abs(e['x'] - target_gokei['x']) < 4000:
+                            val = parse_target_value(e['text'])
+                            if val is not None:
+                                right_nums.append((e['x'] - target_gokei['x'], val))
+                
+                right_nums.sort(key=lambda x: x[0])
+                if right_nums:
+                    return right_nums[0][1]
+        return None
+
+    # 玄関土間面積表から面積を抽出
+    foundation_data['玄関土間面積'] = get_area_from_table(['玄関土間面積表'])
+    # 他土間（浴室土間など）の面積を抽出
+    foundation_data['基礎断熱部分面積'] = get_area_from_table(['他土間面積表', '浴室土間面積表', '基礎断熱面積表', '基礎断熱部分面積表'])
                 
     return foundation_data
 

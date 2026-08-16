@@ -59,7 +59,7 @@ class HouseAppAutomationMethods:
         target_tables = {
             '主たる居室面積': 'primary_area',
             'その他の居室面積': 'other_area',
-            '合計': 'total_area'
+            '合計面積': 'total_area'
         }
         
         results = {

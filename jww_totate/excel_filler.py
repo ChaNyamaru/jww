@@ -16,7 +16,6 @@ def get_dynamic_u_values():
     u_values = {}
     try:
         wb = openpyxl.load_workbook(u_val_files[0], data_only=True)
-        # 木造用シートを探す（無ければ1番目のシート）
         target_sheet = "木造用" if "木造用" in wb.sheetnames else wb.sheetnames[0]
         ws = wb[target_sheet]
         
@@ -26,23 +25,20 @@ def get_dynamic_u_values():
             for c in range(1, ws.max_column + 1):
                 val = ws.cell(r, c).value
                 if isinstance(val, str):
-                    # 全角「Ｌ－１」などを半角「L-1」に変換して判定
                     val_s = unicodedata.normalize('NFKC', val).strip().upper()
                     if pattern.match(val_s):
                         target_r = r + 14
                         if target_r <= ws.max_row:
                             label_val = ws.cell(target_r, c).value
-                            # 空白などが混ざっていても「平均熱貫流率」を含むか判定
                             if isinstance(label_val, str) and "平均熱貫流率" in label_val.replace(" ", "").replace(" ", ""):
-                                # 14行下の同じ列に「平均熱貫流率」があることを確認し、その右側から数値を探す
                                 for offset in range(1, 6):
                                     u_val_candidate = ws.cell(target_r, c + offset).value
                                     if isinstance(u_val_candidate, (int, float)):
-                                        u_values[val_s] = float(Decimal(u_val_candidate).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+                                        u_values[val_s] = float(u_val_candidate)
                                         break
                                     elif isinstance(u_val_candidate, str):
                                         try:
-                                            u_values[val_s] = float(Decimal(u_val_candidate.strip()).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+                                            u_values[val_s] = float(u_val_candidate.strip())
                                             break
                                         except ValueError:
                                             pass
@@ -74,7 +70,6 @@ def parse_window_string(val_str, sash_u=2.33, shutter_u=2.11):
         
     return u_value, eta_value, width, height
 
-# ★変更：引数に dynamic_u_values を追加
 def transfer_to_foundation_sheet(wb, foundation_data, dynamic_u_values):
     """Ｃ（基礎）シートへの転記メソッド"""
     sheet_name = 'Ｃ（基礎）'
@@ -82,14 +77,30 @@ def transfer_to_foundation_sheet(wb, foundation_data, dynamic_u_values):
     if sheet_name not in sheet_names: return
 
     ws = wb.sheets[sheet_name]
-    if foundation_data.get('玄関土間面積') is not None: ws.range('H7').value = foundation_data['玄関土間面積']
-    if foundation_data.get('日射当たる周長') is not None:
-        ws.range('H22').value = foundation_data['日射当たる周長']
+    
+    # 面積の転記
+    if foundation_data.get('玄関土間面積') is not None: 
+        ws.range('H7').value = foundation_data['玄関土間面積']
+    if foundation_data.get('基礎断熱部分面積') is not None: 
+        ws.range('H8').value = foundation_data['基礎断熱部分面積']
+
+    # 玄関土間の周長
+    if foundation_data.get('日射当たる周長（玄関土間）') is not None:
+        ws.range('H22').value = foundation_data['日射当たる周長（玄関土間）']
         ws.range('K22').value = 0.99
-    if foundation_data.get('日射当たらない周長') is not None:
-        ws.range('H23').value = foundation_data['日射当たらない周長']
+    if foundation_data.get('日射当たらない周長（玄関土間）') is not None:
+        ws.range('H23').value = foundation_data['日射当たらない周長（玄関土間）']
         ws.range('K23').value = 0.99
         ws.range('AG23').value = True 
+
+    # 浴室土間（他土間）の周長
+    if foundation_data.get('日射当たる周長（浴室土間）') is not None:
+        ws.range('H24').value = foundation_data['日射当たる周長（浴室土間）']
+        ws.range('K24').value = 0.99
+    if foundation_data.get('日射当たらない周長（浴室土間）') is not None:
+        ws.range('H25').value = foundation_data['日射当たらない周長（浴室土間）']
+        ws.range('K25').value = 0.99
+        ws.range('AG25').value = True
 
     opposites = {'北': '南', '南': '北', '東': '西', '西': '東', '北東': '南西', '南西': '北東', '北西': '南東', '南東': '北西'}
     wall_data = foundation_data.get('基礎壁面積', {})
@@ -111,12 +122,9 @@ def transfer_to_foundation_sheet(wb, foundation_data, dynamic_u_values):
             
         if cell_dir in processed_walls:
             info = processed_walls[cell_dir]
-            ws.range(f'B{row}').value = 'L-2'         
+            ws.range(f'B{row}').value = 'L-1'         
             ws.range(f'H{row}').value = info['area']
-            
-            # ★変更：U値シートから取得したL-2の値を適用（見つからなければデフォルト4.103）
-            ws.range(f'K{row}').value = dynamic_u_values.get('L-2', 4.103)
-            
+            ws.range(f'K{row}').value = dynamic_u_values.get('L-1', 1.23)
             ws.range(f'AG{row}').value = True if info.get('check') is True else None
 
 def transfer_to_roof_floor_sheet(wb, roof_floor_data, dynamic_u_values):
@@ -126,11 +134,11 @@ def transfer_to_roof_floor_sheet(wb, roof_floor_data, dynamic_u_values):
     ws = wb.sheets[sheet_name]
     
     configs = [
-        {'key': 'UB部分', 'shiyo': 'L-1', 'bui': 'その他床', 'u_val': dynamic_u_values.get('L-1', 1.23), 'temp_coef': 0.7},
+        {'key': '吹抜', 'shiyo': 'R-1', 'bui': '天井', 'u_val': dynamic_u_values.get('R-1', 1.23), 'temp_coef': 1.0},
         {'key': 'その他床', 'shiyo': 'F-1', 'bui': 'その他床', 'u_val': dynamic_u_values.get('F-1', 0.413), 'temp_coef': 0.7},
         {'key': '天井', 'shiyo': 'R-1', 'bui': '天井', 'u_val': dynamic_u_values.get('R-1', 0.288), 'temp_coef': 1.0},
         {'key': '屋根', 'shiyo': 'R-2', 'bui': '屋根', 'u_val': dynamic_u_values.get('R-2', 0.207), 'temp_coef': 1.0},
-        {'key': '外気床', 'shiyo': 'F-2', 'bui': '外気床', 'u_val': dynamic_u_values.get('F-2', 0.337), 'temp_coef': 1.0}
+        {'key': '外気', 'shiyo': 'F-2', 'bui': '外気床', 'u_val': dynamic_u_values.get('F-2', 0.337), 'temp_coef': 1.0}
     ]
     
     row = 19
@@ -144,7 +152,7 @@ def transfer_to_roof_floor_sheet(wb, roof_floor_data, dynamic_u_values):
             ws.range(f'N{row}').value = config['temp_coef']   
             row += 1
 
-def transfer_to_wall_area(wb, wall_area_data, dynamic_u_values):
+def transfer_to_wall_area(wb, wall_area_data):
     sheet_mapping = {
         '北': 'Ａ（北）', '北東': 'Ａ（北東）', '東': 'Ａ（東）', '南東': 'Ａ（南東）',
         '南': 'Ａ（南）', '南西': 'Ａ（南西）', '西': 'Ａ（西）', '北西': 'Ａ（北西）'
@@ -216,8 +224,8 @@ def transfer_to_envelope_calc_sheet(extracted_data, foundation_data, roof_floor_
                 
                 if '両開き' in val or '片開き' in val:
                     if door_row > 28: continue
-                    width = 1.165 if '両開き' in val else 0.965
-                    height, u_value = 2.29, 2.91
+                    width = 0.98 if '両開き' in val else 0.965
+                    height, u_value = 2.40, 2.91
                     ws.range(f'J{door_row}').value = target_name
                     ws.range(f'N{door_row}').value = width      
                     ws.range(f'P{door_row}').value = height     
@@ -243,10 +251,9 @@ def transfer_to_envelope_calc_sheet(extracted_data, foundation_data, roof_floor_
             ws.range(f'R{envelope_row}').value = dynamic_u_values.get('W-1', 0.421)                    
             ws.range(f'N{envelope_row}').value = round(total_exclude_area, 3) 
 
-        # ★変更：foundation 呼び出し時に dynamic_u_values を追加
         transfer_to_foundation_sheet(wb, foundation_data, dynamic_u_values)
         transfer_to_roof_floor_sheet(wb, roof_floor_data, dynamic_u_values)
-        transfer_to_wall_area(wb, wall_area_data, dynamic_u_values)
+        transfer_to_wall_area(wb, wall_area_data)
 
         if os.path.exists(output_filename): os.remove(output_filename)
         wb.save(output_filename)
